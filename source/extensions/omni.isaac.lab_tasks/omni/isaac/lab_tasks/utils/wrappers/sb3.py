@@ -26,6 +26,7 @@ from typing import Any
 
 from stable_baselines3.common.utils import constant_fn
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, VecEnvStepReturn
+from stable_baselines3 import HerReplayBuffer
 
 from omni.isaac.lab.envs import DirectRLEnv, ManagerBasedRLEnv
 
