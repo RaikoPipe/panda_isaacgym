@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Sequence, Dict, Any, List
 
 import torch
+from numpy import ndarray, dtype
 
 from omni.isaac.core.utils.stage import get_current_stage
 from omni.isaac.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
+
 from pxr import UsdGeom
 from gymnasium import spaces
 import numpy as np
@@ -41,7 +43,7 @@ class ReachAvoidCollisionEnvCfg(DirectRLEnvCfg):
     episode_length_s = 8.3333  # 500 timesteps
     decimation = 2
     num_actions = 9
-    num_observations = 23
+    num_observations = 25
     num_states = 0
     num_goal_observations = 7
 
@@ -60,20 +62,28 @@ class ReachAvoidCollisionEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=3.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=16, env_spacing=3.0, replicate_physics=True)
+
+    #todo:
+    #   idea: 1. either integrate curobo ( using its collision checker only)
+    #  or: 2. run curobo robotworld alongside this environment
+    #  or: 3. replace this environment with curobo
+
+    # implementing idea 2
+
 
     # robot
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Franka/franka_instanceable.usd",
-            activate_contact_sensors=False,
+            activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 max_depenetration_velocity=5.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False, solver_position_iteration_count=12, solver_velocity_iteration_count=1
+                enabled_self_collisions=True, solver_position_iteration_count=12, solver_velocity_iteration_count=1
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
@@ -127,8 +137,6 @@ class ReachAvoidCollisionEnvCfg(DirectRLEnvCfg):
                 max_depenetration_velocity=5.0,
             ),
         )
-
-
 
     # cabinet
     # cabinet = ArticulationCfg(
@@ -286,6 +294,13 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
 
 
     def _setup_scene(self):
+        # fixme: process test code:
+        from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
+
+        config = RobotWorldConfig.load_from_config("franka.yml", "collision_test.yml", collision_activation_distance=0.0)
+        curobo_fn = RobotWorld(config)
+
+
         # extract scene entities
         self._robot = Articulation(self.cfg.robot)
         #self._cabinet = Articulation(self.cfg.cabinet)
@@ -455,11 +470,6 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
         # return observations, rewards, resets and extras
         return self.obs_buf, self.reward_buf, self.reset_terminated, self.reset_time_outs, self.extras
 
-
-
-
-
-
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
         # robot state
@@ -484,7 +494,25 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
         # Need to refresh the intermediate values so that _get_observations() can use the latest values
         # self._compute_intermediate_values(env_ids)
 
+    def get_collision_info(self) -> torch.Tensor:
+        # todo: implement
+        robot_link_prim_paths = self._robot.root_physx_view.link_paths
+
+
+        # return empty tensor for now
+        return torch.zeros((self.num_envs, len(robot_link_prim_paths), len(self._obstacles)), device=self.device)
+
+
     def _get_observations(self) -> dict:
+        # todo: get closest points between robot links and obstacles
+        # Get robot link paths
+
+        self._robot_links = self._robot.find_bodies(self._robot.body_names)
+        print(self._robot_links)
+        print(self._robot.data)
+        print(self._robot.body_names)
+        print(self._robot.root_physx_view)
+
         # get task and robot observations
 
         # robot observations
@@ -583,6 +611,13 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
 
     def _compute_rewards(self):
         return self._is_success(self._get_achieved_goals(), self._get_goals())
+
+    def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray,
+                       info: Dict[str, Any] = {}) -> list[ndarray[Any, dtype[Any]]]:
+        """Compute reward for single environment; required for HER buffer"""
+        return [np.array(self._is_success(torch.from_numpy(achieved_goal), torch.from_numpy(desired_goal)))]
+
+
 
     def _compute_rewards_old(
             self,

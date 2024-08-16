@@ -49,7 +49,7 @@ class Sb3VecEnvWrapperRace(Sb3VecEnvWrapper):
     def _process_obs(self, obs_dict: torch.Tensor | dict[str, torch.Tensor]) -> np.ndarray | dict[str, np.ndarray]:
         """Convert observations into NumPy data type."""
         # Sb3 doesn't support asymmetric observation spaces, so we only use "policy"
-        obs = obs_dict["policy"]
+        obs = obs_dict
         # note: ManagerBasedRLEnv uses torch backend (by default).
         if isinstance(obs, dict):
             for key, value in obs.items():

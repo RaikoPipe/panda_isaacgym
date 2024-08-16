@@ -19,6 +19,7 @@ gym.register(
     id="Isaac-Reach-Franka-Avoid-Collision-Direct-v0",
     entry_point="omni.isaac.lab_tasks.direct.manipulation:ReachAvoidCollisionEnv",
     disable_env_checker=True,
+    #max_episode_steps=200,
     kwargs={
         "env_cfg_entry_point": ReachAvoidCollisionEnvCfg,
         #"rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",

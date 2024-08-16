@@ -52,6 +52,7 @@ from sb3_contrib import TQC
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
+from sb3_extensions import EvalSuccessCallback, StopTrainingOnSuccessThreshold
 
 from omni.isaac.lab.utils.dict import print_dict
 from omni.isaac.lab.utils.io import dump_pickle, dump_yaml
@@ -122,7 +123,10 @@ def main():
         )
 
     # create agent from stable baselines
-    agent = TQC(policy_arch, env, verbose=1, **agent_cfg)
+    agent = TQC(policy_arch, env, verbose=1, **agent_cfg, learning_starts=10000)
+    # Hint: Replay buffer is split by num of envs. Learning starts will equally distribute samples.
+    # When learning starts is smaller than max_ep_steps * num_envs, sampling the buffer will fail.
+    # Therefore set learning_starts >= max_ep_steps * num_envs
     # configure the logger
     new_logger = configure(log_dir, ["stdout", "tensorboard"])
     agent.set_logger(new_logger)

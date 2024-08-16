@@ -29,7 +29,6 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, Vec
 from stable_baselines3 import HerReplayBuffer
 
 from omni.isaac.lab.envs import DirectRLEnv, ManagerBasedRLEnv
-
 """
 Configuration Parser.
 """
@@ -271,10 +270,9 @@ class Sb3VecEnvWrapper(VecEnv):
             # gymnasium does not support changing render mode at runtime
             return self.env.render()
         else:
-            # this isn't properly implemented but it is not necessary.
-            # mostly done for completeness.
+            # ignore indices for now
             env_method = getattr(self.env, method_name)
-            return env_method(*method_args, indices=indices, **method_kwargs)
+            return env_method(*method_args, **method_kwargs)
 
     def env_is_wrapped(self, wrapper_class, indices=None):  # noqa: D102
         raise NotImplementedError("Checking if environment is wrapped is not supported.")
