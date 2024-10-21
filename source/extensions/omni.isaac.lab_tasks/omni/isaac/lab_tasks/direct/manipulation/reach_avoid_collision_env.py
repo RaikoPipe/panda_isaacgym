@@ -21,7 +21,8 @@ from dataclasses import MISSING
 
 import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.actuators.actuator_cfg import ImplicitActuatorCfg
-from omni.isaac.lab.assets import Articulation, ArticulationCfg
+from omni.isaac.lab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg, AssetBaseCfg, AssetBase
+from omni.isaac.lab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
 from omni.isaac.lab.scene import InteractiveSceneCfg
 from omni.isaac.lab.sim import SimulationCfg
@@ -31,6 +32,10 @@ from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from omni.isaac.lab.utils.math import sample_uniform
 from omni.isaac.lab.sim.spawners.shapes import spawn_sphere
 from omni.isaac.lab.envs.common import VecEnvObs, VecEnvStepReturn
+from omni.isaac.lab.sim.spawners.shapes import SphereCfg
+from omni.isaac.lab.managers import EventTermCfg
+
+from omni.isaac.lab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
 from omni.isaac.lab.envs import mdp
 
@@ -69,8 +74,10 @@ class ReachAvoidCollisionEnvCfg(DirectRLEnvCfg):
     #  or: 2. run curobo robotworld alongside this environment
     #  or: 3. replace this environment with curobo
 
-    # implementing idea 2
+    # todo: implement 2
+    #   Intuition: Update curobo instance alongside simulation
 
+    #curobo_config = RobotWorldConfig.load_from_config("franka.yml", "collision_test.yml", collision_activation_distance=0.0)
 
     # robot
     robot = ArticulationCfg(
@@ -129,49 +136,45 @@ class ReachAvoidCollisionEnvCfg(DirectRLEnvCfg):
     obstacles = {}
 
     for i in range(3):
-        obstacles[f"obstacle_{i}"] = sim_utils.MeshSphereCfg(
-            radius = 0.05,
-            visible=True,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=True,
-                max_depenetration_velocity=5.0,
-            ),
+        obstacles[f"obstacle_{i}"] = RigidObjectCfg(
+            prim_path=f"/World/envs/env_.*/obstacle_{i}",
+            spawn=SphereCfg(
+                radius=0.1,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    kinematic_enabled=True,
+                ),
+            )
         )
 
-    # cabinet
-    # cabinet = ArticulationCfg(
-    #     prim_path="/World/envs/env_.*/Cabinet",
-    #     spawn=sim_utils.UsdFileCfg(
-    #         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd",
-    #         activate_contact_sensors=False,
-    #     ),
-    #     init_state=ArticulationCfg.InitialStateCfg(
-    #         pos=(0.0, 0, 0.4),
-    #         rot=(0.1, 0.0, 0.0, 0.0),
-    #         joint_pos={
-    #             "door_left_joint": 0.0,
-    #             "door_right_joint": 0.0,
-    #             "drawer_bottom_joint": 0.0,
-    #             "drawer_top_joint": 0.0,
-    #         },
-    #     ),
-    #     actuators={
-    #         "drawers": ImplicitActuatorCfg(
-    #             joint_names_expr=["drawer_top_joint", "drawer_bottom_joint"],
-    #             effort_limit=87.0,
-    #             velocity_limit=100.0,
-    #             stiffness=10.0,
-    #             damping=1.0,
-    #         ),
-    #         "doors": ImplicitActuatorCfg(
-    #             joint_names_expr=["door_left_joint", "door_right_joint"],
-    #             effort_limit=87.0,
-    #             velocity_limit=100.0,
-    #             stiffness=10.0,
-    #             damping=2.5,
-    #         ),
-    #     },
-    # )
+    target_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/goal_marker",
+        markers={
+            "target": sim_utils.SphereCfg(
+                radius=1.0,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+            ),
+        },
+    )
+
+    # Randomization
+    obstacle_position = EventTermCfg(
+
+    )
+
+    # world
+    ground = AssetBaseCfg(
+        prim_path="/World/ground",
+        spawn=sim_utils.GroundPlaneCfg(),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -1.05)),
+    )
+
+    table = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Table",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd",
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.55, 0.0, 0.0), rot=(0.70711, 0.0, 0.0, 0.70711)),
+    )
 
     # ground plane
     terrain = TerrainImporterCfg(
@@ -281,7 +284,6 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
             (self.num_envs, 1)
         )
 
-
         self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
         self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
         self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
@@ -289,29 +291,32 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
         self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
-        self.goals = torch.zeros((self.num_envs, self.cfg.num_goal_observations), device=self.device)
+        # default goal positions
+        self.goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
+        self.goal_rot[:, 0] = 1.0
+        self.goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.goal_pos[:, :] = torch.tensor([-0.2, -0.45, 0.68], device=self.device)
 
-
+        # initialize goal marker
+        self.goal_markers = VisualizationMarkers(self.cfg.target_cfg)
 
     def _setup_scene(self):
-        # fixme: process test code:
-        from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
 
-        config = RobotWorldConfig.load_from_config("franka.yml", "collision_test.yml", collision_activation_distance=0.0)
-        curobo_fn = RobotWorld(config)
-
+        #self.robot_world = RobotWorld(self.cfg.curobo_config)
 
         # extract scene entities
         self._robot = Articulation(self.cfg.robot)
         #self._cabinet = Articulation(self.cfg.cabinet)
-        # spawn obstacles
-        self._obstacles = {name: spawn_sphere(prim_path=f"/World/Sphere/{name}", cfg=cfg) for name, cfg in self.cfg.obstacles.items()}
+        self.obstacles = {}
+        for name, obstacle_cfg in self.cfg.obstacles.items():
+            self.obstacles[name] = RigidObject(obstacle_cfg)
+            self.scene.rigid_objects[name] = self.obstacles[name]
         self.scene.articulations["robot"] = self._robot
         #self.scene.articulations["cabinet"] = self._cabinet
 
-        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        self.cfg.ground_plane.num_envs = self.scene.cfg.num_envs
+        self.cfg.ground_plane.env_spacing = self.scene.cfg.env_spacing
+        self._ground_plane = self.cfg.ground_plane.class_type(self.cfg.ground_plane)
 
         # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
@@ -350,7 +355,6 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space, self.num_envs)
         self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
 
-
     # pre-physics step calls
 
     def _pre_physics_step(self, actions: torch.Tensor):
@@ -365,7 +369,7 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # todo: adjust termination condition: truncated on timeout and obstacle collision; terminated on success
-        terminated = self._robot.data.joint_pos[:, 3] > 0.39
+        terminated = self.get_position_error()
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
@@ -498,20 +502,14 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
         # todo: implement
         robot_link_prim_paths = self._robot.root_physx_view.link_paths
 
-
         # return empty tensor for now
         return torch.zeros((self.num_envs, len(robot_link_prim_paths), len(self._obstacles)), device=self.device)
-
 
     def _get_observations(self) -> dict:
         # todo: get closest points between robot links and obstacles
         # Get robot link paths
 
         self._robot_links = self._robot.find_bodies(self._robot.body_names)
-        print(self._robot_links)
-        print(self._robot.data)
-        print(self._robot.body_names)
-        print(self._robot.root_physx_view)
 
         # get task and robot observations
 
@@ -530,6 +528,8 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
         )
 
         robot_grasp_pose = self._get_achieved_goals()
+
+        # self.goal = self.poop
         to_target = self.goals - robot_grasp_pose
 
         # obs = torch.cat(
@@ -552,17 +552,25 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
                 "desired_goal": self.goals,
                 "achieved_goal": robot_grasp_pose}
 
-
     # auxiliary methods
 
-    def _set_new_goals(self, env_ids: Sequence[int]) -> torch.Tensor:
+    def _sample_new_goals(self, env_ids: Sequence[int]):
         """Set new goals for the given environment indices"""
-        self.goals[env_ids] = self._sample_goal()
+        # reset goal rotation
+        rand_floats = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
 
-    def _sample_goal(self) -> torch.Tensor:
-        """Sample random goal pose"""
-        # todo: get random position and quaternion
-        return torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], device=self.device)
+        new_rot = randomize_rotation(
+            rand_floats[:, 0], rand_floats[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
+        )
+
+        # todo: sample random goal positions
+
+        # update goal pose and markers
+        self.goal_rot[env_ids] = new_rot
+        goal_pos = self.goal_pos + self.scene.env_origins
+        self.goal_markers.visualize(goal_pos, self.goal_rot)
+
+        self.reset_goal_buf[env_ids] = 0
 
     def _get_achieved_goals(self) -> torch.Tensor:
         return torch.cat((self.robot_grasp_pos, self.robot_grasp_rot), dim=-1)
@@ -591,7 +599,6 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
 
         return torch.where(total_distances < 0.05, torch.ones_like(total_distances), torch.zeros_like(total_distances))
 
-
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
@@ -616,8 +623,6 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
                        info: Dict[str, Any] = {}) -> list[ndarray[Any, dtype[Any]]]:
         """Compute reward for single environment; required for HER buffer"""
         return [np.array(self._is_success(torch.from_numpy(achieved_goal), torch.from_numpy(desired_goal)))]
-
-
 
     def _compute_rewards_old(
             self,
@@ -739,6 +744,21 @@ class ReachAvoidCollisionEnv(DirectRLEnv):
 
         return global_franka_rot, global_franka_pos
 
+    def get_position_errors(self) -> torch.Tensor:
+        """Get position error to target using L2-norm.
+
+        The function computes the position error between the desired position and the
+        current position of the panda hand (in world frame). The position error is computed as the L2-norm
+        of the difference between the desired and current positions.
+        """
+        # obtain the desired and current positions
+        target_pos = self.goal_pos
+        grasp_pos = self.robot_grasp_pos
+
+        return torch.norm(grasp_pos - target_pos, dim=1)
+
+
+
 
 def _get_randomized_position_near_robot(seed):
     # randomize the position of the robot
@@ -749,3 +769,25 @@ def _get_randomized_position_near_robot(seed):
     position[1] = position[1] - 0.05
     position[2] = position[2] + 0.05
     return position
+
+@torch.jit.script
+def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
+    return quat_mul(
+        quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor)
+    )
+
+# def orientation_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+#     """Penalize tracking orientation error using shortest path.
+#
+#     The function computes the orientation error between the desired orientation (from the command) and the
+#     current orientation of the asset's body (in world frame). The orientation error is computed as the shortest
+#     path between the desired and current orientations.
+#     """
+#     # extract the asset (to enable type hinting)
+#     asset: RigidObject = env.scene[asset_cfg.name]
+#     command = env.command_manager.get_command(command_name)
+#     # obtain the desired and current orientations
+#     des_quat_b = command[:, 3:7]
+#     des_quat_w = quat_mul(asset.data.root_state_w[:, 3:7], des_quat_b)
+#     curr_quat_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], 3:7]  # type: ignore
+#     return quat_error_magnitude(curr_quat_w, des_quat_w)
